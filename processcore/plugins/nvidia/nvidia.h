@@ -26,4 +26,9 @@ private:
 
     QString m_sniExecutablePath;
     QProcess *m_process = nullptr;
+
+    int m_pidIndex;
+    int m_smIndex;
+    int m_memIndex;
+    int m_expected;
 };

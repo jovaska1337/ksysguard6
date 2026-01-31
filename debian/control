@@ -27,7 +27,6 @@ Build-Depends:
  kdoctools6-dev,
  libkf6auth-dev,
  libplasma-dev,
- libkdecorations2-dev,
  libkf6kcmutils-dev,
  libkf6config-dev,
  libksysguard-dev,

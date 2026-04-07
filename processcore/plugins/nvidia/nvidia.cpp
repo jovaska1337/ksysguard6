@@ -53,12 +53,7 @@ NV_FUNC(nvmlDeviceGetMPSComputeRunningProcesses)
 
     ~nvmlLib()
     {
-        if (m_loaded)
-        {
-            assert(getFuncs().nvmlShutdown != nullptr);
-            getFuncs().nvmlShutdown();
-            unloadLib();
-        }
+        unloadLib();
     }
 
     bool isLoaded()
@@ -130,6 +125,8 @@ private:
     {
         if (m_loaded)
         {
+            assert(getFuncs().nvmlShutdown != nullptr);
+            getFuncs().nvmlShutdown();
             m_funcs = nvmlFuncs{};
             assert(m_handle != nullptr);
             dlclose(m_handle);

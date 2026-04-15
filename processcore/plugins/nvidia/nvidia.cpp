@@ -8,6 +8,7 @@
 #include "nvidia.h"
 
 #include <QDebug>
+#include <QLibrary>
 
 #include <KLocalizedString>
 #include <KPluginFactory>
@@ -33,7 +34,7 @@ class nvmlLib {
 public:
     struct nvmlFuncs
     {
-#define NV_FUNC(name) typeof(&::name) name;
+#define NV_FUNC(name) decltype(&::name) name;
 NV_FUNC(nvmlInit)
 NV_FUNC(nvmlShutdown)
 NV_FUNC(nvmlDeviceGetCount)
@@ -47,7 +48,7 @@ NV_FUNC(nvmlDeviceGetMPSComputeRunningProcesses)
     };
 
     nvmlLib()
-        : m_loaded(false), m_handle(nullptr), m_funcs{}
+        : m_lib("nvidia-ml"), m_funcs{}
     {
     }
 
@@ -56,35 +57,36 @@ NV_FUNC(nvmlDeviceGetMPSComputeRunningProcesses)
         unloadLib();
     }
 
-    bool isLoaded()
+    bool isLoaded() const
     {
-        return m_loaded;
+        return m_lib.isLoaded();
     }
 
     bool tryLoad()
     {
-        if (m_loaded)
+        if (isLoaded())
         {
             return true;
         }
 
-        void *handle = dlopen("libnvidia-ml.so", RTLD_NOW);
-        if (handle == nullptr)
+        if (!m_lib.load())
         {
             return false;
         }
     
-        // try to dlsym() all NVML functions
-        nvmlFuncs funcs{};
+        while (1)
+        {
+            // try to dlsym() all NVML functions
+            nvmlFuncs funcs{};
 #define NV_STR(name) #name
-#define NV_FUNC(name) do {                                            \
-        auto *ptr = dlsym(handle, NV_STR(name));                      \
-        if (ptr == nullptr) {                                         \
-            goto _fail;                                               \
-        } else {                                                      \
-            funcs.name = reinterpret_cast<decltype(funcs.name)>(ptr); \
-        }                                                             \
-    } while (0);
+#define NV_FUNC(name) do {                                                    \
+                auto *ptr = m_lib.resolve(NV_STR(name));                      \
+                if (ptr == nullptr) {                                         \
+                    break;                                                    \
+                } else {                                                      \
+                    funcs.name = reinterpret_cast<decltype(funcs.name)>(ptr); \
+                }                                                             \
+            } while (0);
 NV_FUNC(nvmlInit)
 NV_FUNC(nvmlShutdown)
 NV_FUNC(nvmlDeviceGetCount)
@@ -97,46 +99,39 @@ NV_FUNC(nvmlDeviceGetMPSComputeRunningProcesses)
 #undef NV_FUNC
 #undef NV_STR
 
-        // initialize NVML here
-        if (funcs.nvmlInit() != NVML_SUCCESS)
-        {
-            goto _fail;
+            // initialize NVML here
+            if (funcs.nvmlInit() != NVML_SUCCESS)
+            {
+                break;
+            }
+
+            m_funcs = funcs;
+            return true;
         }
 
-        // mark loaded
-        m_funcs  = funcs;
-        m_handle = handle;
-        m_loaded = true;
-
-        return true;
-_fail:
-        dlclose(handle);
+        m_lib.unload();
         return false;
     }
 
     const nvmlFuncs &getFuncs() const
     {
-        assert(m_loaded);
+        assert(isLoaded());
         return m_funcs;    
     }
 
 private:
     void unloadLib()
     {
-        if (m_loaded)
+        if (isLoaded())
         {
             assert(getFuncs().nvmlShutdown != nullptr);
             getFuncs().nvmlShutdown();
             m_funcs = nvmlFuncs{};
-            assert(m_handle != nullptr);
-            dlclose(m_handle);
-            m_handle = nullptr;
-            m_loaded = false;
+            m_lib.unload();
         }
     }
 
-    bool m_loaded;
-    void *m_handle;
+    QLibrary m_lib;
     nvmlFuncs m_funcs;
 };
 
@@ -230,12 +225,12 @@ public:
         }
     }
 
-    void setUsage(std::function<void(unsigned int pid, unsigned int usage, unsigned int memory)> &&callback)
+    void setUsage(std::function<void(unsigned int pid, unsigned int usage, unsigned long long memory)> &&callback)
     {
         for (auto &item : m_infoList)
         {
             // report memory usage in MiB
-            callback(item.first, item.second.gpuUtil, item.second.memUsage / (1024 * 1024));
+            callback(item.first, item.second.gpuUtil, item.second.memUsage);
         }
     }
 
@@ -404,7 +399,7 @@ NvidiaPlugin::NvidiaPlugin(QObject *parent, const QVariantList &args)
     m_usage = std::make_unique<ProcessAttribute>(QStringLiteral("nvidia_usage"), i18n("GPU Usage"), this);
     m_usage->setUnit(KSysGuard::UnitPercent);
     m_memory = std::make_unique<ProcessAttribute>(QStringLiteral("nvidia_memory"), i18n("GPU Memory"), this);
-    m_memory->setUnit(KSysGuard::UnitMegaByte);
+    m_memory->setUnit(KSysGuard::UnitByte);
 
     addProcessAttribute(m_usage.get());
     addProcessAttribute(m_memory.get());
@@ -412,30 +407,20 @@ NvidiaPlugin::NvidiaPlugin(QObject *parent, const QVariantList &args)
 
 void NvidiaPlugin::handleEnabledChanged(bool enabled)
 {
-    if (!m_nvmlLib->isLoaded())
+    if (!m_nvmlLib)
         return;
 
     if (enabled) {
-        setup();
+        m_nvmlDetail = std::unique_ptr<nvmlDetail, nvmlDetailDeleter>(new nvmlDetail(*m_nvmlLib.get()));
+        m_nvmlDetail->loadGpus();
     } else {
-        cleanup();
+        m_nvmlDetail.reset();
     }
-}
-
-void NvidiaPlugin::setup()
-{
-    m_nvmlDetail = std::unique_ptr<nvmlDetail, nvmlDetailDeleter>(new nvmlDetail(*m_nvmlLib.get()));
-    m_nvmlDetail->loadGpus();
-}
-
-void NvidiaPlugin::cleanup()
-{
-    m_nvmlDetail.reset();
 }
 
 void NvidiaPlugin::update()
 {
-    if (!m_nvmlLib->isLoaded())
+    if (!m_nvmlLib)
         return;
 
     m_nvmlDetail->update();
@@ -451,7 +436,7 @@ void NvidiaPlugin::update()
     });
 
     // set usage data for processes with utilization / memory usage
-    m_nvmlDetail->setUsage([&](unsigned int pid, unsigned int usage, unsigned int memory){
+    m_nvmlDetail->setUsage([&](unsigned int pid, unsigned int usage, unsigned long long memory){
         auto *proc = getProcess(pid);
         if (proc != nullptr)
         {

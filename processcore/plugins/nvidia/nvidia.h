@@ -32,8 +32,6 @@ public:
     void handleEnabledChanged(bool enabled) override;
 
 private:
-    void setup();
-    void cleanup();
     void update() override;
 
     std::unique_ptr<KSysGuard::ProcessAttribute> m_usage;

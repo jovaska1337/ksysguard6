@@ -229,7 +229,6 @@ public:
     {
         for (auto &item : m_infoList)
         {
-            // report memory usage in MiB
             callback(item.first, item.second.gpuUtil, item.second.memUsage);
         }
     }

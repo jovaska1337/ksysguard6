@@ -1,5 +1,6 @@
 /*
     SPDX-FileCopyrightText: 2019 David Edmundson <davidedmundson@kde.org>
+    SPDX-FileCopyrightText: 2026 Juho Ovaska <ovaska.juho@gmail.com>
 
     SPDX-License-Identifier: LGPL-2.0-or-later
 */
@@ -9,26 +10,24 @@
 #include "../processcore/process_attribute.h"
 #include "../processcore/process_data_provider.h"
 
-class QProcess;
+class nvmlLib;
+class nvmlDetail;
 
 class NvidiaPlugin : public KSysGuard::ProcessDataProvider
 {
     Q_OBJECT
 public:
     NvidiaPlugin(QObject *parent, const QVariantList &args);
+    ~NvidiaPlugin();
+
     void handleEnabledChanged(bool enabled) override;
 
 private:
-    void setup();
+    void update() override;
 
     KSysGuard::ProcessAttribute *m_usage = nullptr;
     KSysGuard::ProcessAttribute *m_memory = nullptr;
 
-    QString m_sniExecutablePath;
-    QProcess *m_process = nullptr;
-
-    int m_pidIndex;
-    int m_smIndex;
-    int m_memIndex;
-    int m_expected;
+    std::unique_ptr<nvmlLib> m_nvmlLib;
+    std::unique_ptr<nvmlDetail> m_nvmlDetail;
 };
